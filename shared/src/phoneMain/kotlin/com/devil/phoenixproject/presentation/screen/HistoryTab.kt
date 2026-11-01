@@ -575,13 +575,15 @@ private fun WorkoutHistoryCard(
                     BiomechanicsSection(session = session)
 
                     // Polar H10 Cardiac & Biomechanics Telemetry Section
-                    PolarSessionAnalyticsCard(
-                        sessionId = session.id,
-                        session = session,
-                        polarBleManager = polarBleManager,
-                        workoutRepository = workoutRepository,
-                        showCooldown = false,
-                    )
+                    if (session.hasPolarTelemetry) {
+                        PolarSessionAnalyticsCard(
+                            sessionId = session.id,
+                            session = session,
+                            polarBleManager = polarBleManager,
+                            workoutRepository = workoutRepository,
+                            showCooldown = false,
+                        )
+                    }
                 }
             }
 
@@ -1202,8 +1204,16 @@ private fun GroupedRoutineCard(
                     }
 
                     // Polar H10 Cardiac & Biomechanics Telemetry Section (rendered below all exercises & rep details)
-                    val polarSession = groupedItem.sessions.find {
-                        it.avgHeartRateBpm != null || it.maxHeartRateBpm != null || it.hrr60Bpm != null
+                    val polarSets = groupedItem.sessions.filter { it.hasPolarTelemetry }.sortedBy { it.timestamp }
+                    val polarSession = polarSets.lastOrNull()?.let { last ->
+                        val avgHrs = polarSets.mapNotNull { it.avgHeartRateBpm }
+                        last.copy(
+                            avgHeartRateBpm = avgHrs.takeIf { it.isNotEmpty() }?.average()?.let { (it + 0.5).toInt() },
+                            maxHeartRateBpm = polarSets.mapNotNull { it.maxHeartRateBpm }.maxOrNull(),
+                            minHeartRateBpm = polarSets.mapNotNull { it.minHeartRateBpm }.minOrNull(),
+                            hrr60Bpm = polarSets.lastOrNull { it.hrr60Bpm != null }?.hrr60Bpm,
+                            hrr300Bpm = polarSets.lastOrNull { it.hrr300Bpm != null }?.hrr300Bpm,
+                        )
                     }
 
                     if (polarSession != null) {

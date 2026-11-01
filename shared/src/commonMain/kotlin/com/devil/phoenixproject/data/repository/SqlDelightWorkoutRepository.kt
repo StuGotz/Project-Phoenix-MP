@@ -3,7 +3,8 @@ package com.devil.phoenixproject.data.repository
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
 import co.touchlab.kermit.Logger
-import com.devil.phoenixproject.database.MetricSample
+import com.devil.phoenixproject.data.ble.PolarH10BleManager
+import com.devil.phoenixproject.data.ble.PolarSessionSummary
 import com.devil.phoenixproject.database.PhoenixDatabase
 import com.devil.phoenixproject.database.PolarBeatSample
 import com.devil.phoenixproject.database.PolarEcgSegment
@@ -22,8 +23,6 @@ import com.devil.phoenixproject.domain.model.WorkoutSession
 import com.devil.phoenixproject.domain.model.currentTimeMillis
 import com.devil.phoenixproject.domain.model.generateUUID
 import com.devil.phoenixproject.domain.onerepmax.WorkoutVelocityPoint
-import com.devil.phoenixproject.util.PolarTelemetryUtils
-import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -570,6 +569,26 @@ class SqlDelightWorkoutRepository(
         repMetrics: List<com.devil.phoenixproject.domain.model.RepMetricData>,
         repBiomechanics: List<com.devil.phoenixproject.domain.model.BiomechanicsRepResult>,
     ) {
+        commitCompletedSet(
+            session = session,
+            metrics = metrics,
+            completedSet = completedSet,
+            repMetrics = repMetrics,
+            repBiomechanics = repBiomechanics,
+            polarBeatSamples = emptyList(),
+            polarEcgSegments = emptyList(),
+        )
+    }
+
+    override suspend fun commitCompletedSet(
+        session: WorkoutSession,
+        metrics: List<com.devil.phoenixproject.domain.model.WorkoutMetric>,
+        completedSet: com.devil.phoenixproject.domain.model.CompletedSet?,
+        repMetrics: List<com.devil.phoenixproject.domain.model.RepMetricData>,
+        repBiomechanics: List<com.devil.phoenixproject.domain.model.BiomechanicsRepResult>,
+        polarBeatSamples: List<PolarBeatSample>,
+        polarEcgSegments: List<PolarEcgSegment>,
+    ) {
         withContext(Dispatchers.IO) {
             db.transaction {
                 if (queries.selectSessionById(session.id).executeAsOneOrNull() == null) {
@@ -588,11 +607,85 @@ class SqlDelightWorkoutRepository(
                 repMetrics.forEach { metric -> queries.insertRepMetricRow(session.id, metric) }
                 queries.deleteRepBiomechanicsBySession(session.id)
                 repBiomechanics.forEach { result -> queries.insertRepBiomechanicsRow(session.id, result) }
+                insertPolarTelemetryRows(
+                    sessionId = session.id,
+                    beatSamples = polarBeatSamples,
+                    ecgSegments = polarEcgSegments,
+                )
                 // Main's newer sync-dirty contract: every child write marks its
                 // session. The atomic commit writes those children in one
                 // transaction, so it must dirty the session the same way the
                 // old per-repo calls did — otherwise a committed set never pushes.
                 queries.markWorkoutComponentDirty(session.id)
+            }
+        }
+    }
+
+    override suspend fun savePolarSessionTelemetry(
+        sessionId: String,
+        beatSamples: List<PolarBeatSample>,
+        ecgSegments: List<PolarEcgSegment>,
+        summary: PolarSessionSummary?,
+    ) {
+        if (beatSamples.isEmpty() && ecgSegments.isEmpty() && summary == null) return
+        withContext(Dispatchers.IO) {
+            db.transaction {
+                if (queries.selectSessionById(sessionId).executeAsOneOrNull() == null) {
+                    return@transaction
+                }
+                if (summary != null) {
+                    queries.updateSessionPolarSummary(
+                        id = sessionId,
+                        avgHeartRateBpm = summary.avgHeartRateBpm?.toLong(),
+                        maxHeartRateBpm = summary.maxHeartRateBpm?.toLong(),
+                        minHeartRateBpm = summary.minHeartRateBpm?.toLong(),
+                        avgRrIntervalMs = summary.avgRrIntervalMs?.toDouble(),
+                        rmssdMs = summary.rmssdMs?.toDouble(),
+                        hrr60Bpm = summary.hrr60Bpm?.toLong(),
+                        hrr300Bpm = summary.hrr300Bpm?.toLong(),
+                        maxTorsoPitchDeg = summary.maxTorsoPitchDeg?.toDouble(),
+                        maxTorsoRollDeg = summary.maxTorsoRollDeg?.toDouble(),
+                    )
+                }
+                insertPolarTelemetryRows(
+                    sessionId = sessionId,
+                    beatSamples = beatSamples,
+                    ecgSegments = ecgSegments,
+                )
+                queries.markWorkoutComponentDirty(sessionId)
+            }
+        }
+    }
+
+    private fun insertPolarTelemetryRows(
+        sessionId: String,
+        beatSamples: List<PolarBeatSample>,
+        ecgSegments: List<PolarEcgSegment>,
+    ) {
+        for (b in beatSamples) {
+            queries.insertPolarBeatSample(
+                sessionId = sessionId,
+                timestampMs = b.timestampMs,
+                phase = b.phase,
+                hrBpm = b.hrBpm,
+                rrMs = b.rrMs,
+                rmssdMs = b.rmssdMs,
+                torsoPitchDeg = b.torsoPitchDeg,
+                torsoRollDeg = b.torsoRollDeg,
+                dynamicAccMg = b.dynamicAccMg,
+            )
+        }
+        if (ecgSegments.isNotEmpty()) {
+            val existingCount = queries.selectPolarEcgSegmentsBySession(sessionId).executeAsList().size
+            val remainingCap = (PolarH10BleManager.MAX_ECG_SEGMENTS_PER_SESSION - existingCount).coerceAtLeast(0)
+            for (seg in ecgSegments.takeLast(remainingCap)) {
+                queries.insertPolarEcgSegment(
+                    sessionId = sessionId,
+                    sensorTimestampNs = seg.sensorTimestampNs,
+                    wallClockTimestampMs = seg.wallClockTimestampMs,
+                    phase = seg.phase,
+                    samplesUvCsv = seg.samplesUvCsv,
+                )
             }
         }
     }
@@ -1700,11 +1793,6 @@ class SqlDelightWorkoutRepository(
     override suspend fun getPolarEcgSegmentsBySession(sessionId: String): List<PolarEcgSegment> =
         withContext(Dispatchers.IO) {
             queries.selectPolarEcgSegmentsBySession(sessionId).executeAsList()
-        }
-
-    override suspend fun getMetricSamplesBySession(sessionId: String): List<MetricSample> =
-        withContext(Dispatchers.IO) {
-            queries.selectMetricsBySession(sessionId).executeAsList()
         }
 }
 

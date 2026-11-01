@@ -244,7 +244,7 @@ class DataBackupCompletenessTest {
     // ---- polar telemetry completeness ----
 
     @Test
-    fun `polar summaries samples and ecg traces survive backup and restore even when raw telemetry is false`() = runTest {
+    fun `polar summaries survive backup and restore while raw beat ecg and metric samples are omitted when includeRawTelemetry is false`() = runTest {
         val source = Fixture(includeRawTelemetry = false)
         source.seedProfiles()
         source.database.seedExercise("bench", "Bench Press")
@@ -393,6 +393,12 @@ class DataBackupCompletenessTest {
         assertEquals(1, fullTarget.queries.selectMetricsBySession("session-polar-2").executeAsList().size)
         assertEquals(1, fullTarget.queries.selectPolarBeatSamplesBySession("session-polar-2").executeAsList().size)
         assertEquals(1, fullTarget.queries.selectPolarEcgSegmentsBySession("session-polar-2").executeAsList().size)
+
+        // Repeat import of identical backup skips rather than errors
+        val repeatResult = fullTarget.manager.importFromJson(fullJson).getOrThrow()
+        assertEquals(0, repeatResult.entitiesWithErrors)
+        assertEquals(1, repeatResult.polarBeatSamplesSkipped)
+        assertEquals(1, repeatResult.polarEcgSegmentsSkipped)
     }
 
     // ---- restore resets settings-held sync state ----

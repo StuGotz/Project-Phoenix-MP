@@ -49,11 +49,15 @@ class PolarH10BleManagerTest {
     }
 
     @Test
-    fun `isPolarH10Advertisement matches standard Heart Rate service UUID 0x180D`() {
+    fun `isPolarH10Advertisement matches standard Heart Rate service UUID 0x180D only for Polar-named devices`() {
         val manager = PolarH10BleManager()
 
         val hrUuid = BleConstants.Polar.HR_SERVICE_UUID
-        assertTrue(manager.isPolarH10Advertisement(CompositionAdvertisement(name = null, uuids = listOf(hrUuid))))
+        assertTrue(manager.isPolarH10Advertisement(CompositionAdvertisement(name = "Polar 12345678", uuids = listOf(hrUuid))))
+        assertTrue(manager.isPolarH10Advertisement(CompositionAdvertisement(name = "Polar H10", uuids = listOf(hrUuid))))
+        assertFalse(manager.isPolarH10Advertisement(CompositionAdvertisement(name = null, uuids = listOf(hrUuid))))
+        assertFalse(manager.isPolarH10Advertisement(CompositionAdvertisement(name = "Garmin HRM-Pro", uuids = listOf(hrUuid))))
+        assertFalse(manager.isPolarH10Advertisement(CompositionAdvertisement(name = "Wahoo TICKR", uuids = listOf(hrUuid))))
 
         val nusUuid = BleConstants.NUS_SERVICE_UUID
         assertFalse(manager.isPolarH10Advertisement(CompositionAdvertisement(name = "Unknown", uuids = listOf(nusUuid))))
@@ -186,6 +190,7 @@ class PolarH10BleManagerTest {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         assertFalse(manager.isCooldownActive.value)
         assertEquals(0, manager.cooldownSecondsRemaining.value)
@@ -225,6 +230,7 @@ class PolarH10BleManagerTest {
     fun `concurrent getSessionSummary reading while HR callbacks append is thread-safe`() {
         val testScope = CoroutineScope(Dispatchers.Default + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { 100_000L })
+        manager.setConnectedForTesting(true)
         manager.startSessionRecording("session-stress", "WORKING_SET")
 
         var exceptionThrown: Throwable? = null
@@ -269,6 +275,7 @@ class PolarH10BleManagerTest {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         // 1. Start routine set 1
         manager.startSessionRecording("routine-session-1", "WARMUP")
@@ -307,6 +314,7 @@ class PolarH10BleManagerTest {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         manager.startSessionRecording("session-guard", "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 160, contactDetected = true, rrIntervalsMs = listOf(700.0)))
@@ -335,6 +343,7 @@ class PolarH10BleManagerTest {
     fun `cooldown anchors peak HR during first 30 seconds`() = runTest {
         var simulatedTime = 100_000L
         val manager = PolarH10BleManager(scope = this, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         manager.startSessionRecording("session-peak", "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 140, contactDetected = true, rrIntervalsMs = listOf(800.0)))
@@ -415,10 +424,11 @@ class PolarH10BleManagerTest {
     }
 
     @Test
-    fun `strap removal or disconnection during cooldown immediately terminates recovery window`() {
+    fun `strap removal debounces brief contact loss during cooldown and terminates on sustained removal or disconnect`() {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         manager.startSessionRecording("session-recovery", "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 150, contactDetected = true, rrIntervalsMs = listOf(800.0)))
@@ -427,13 +437,22 @@ class PolarH10BleManagerTest {
         assertTrue(manager.isCooldownActive.value, "Cooldown must be active")
         assertEquals(300, manager.cooldownSecondsRemaining.value)
 
-        // User unhooks strap during recovery cooldown
+        // 1st and 2nd no-contact packets within <= 3s are debounced (cooldown remains active)
+        simulatedTime += 1000L
         manager.processRrIntervals(PolarHrMeasurement(hr = 0, contactDetected = false, rrIntervalsMs = emptyList()))
+        assertTrue(manager.isCooldownActive.value, "Single no-contact packet must not hair-trigger cancel cooldown")
 
-        assertFalse(manager.isCooldownActive.value, "Cooldown must be terminated upon strap removal")
+        simulatedTime += 1000L
+        manager.processRrIntervals(PolarHrMeasurement(hr = 0, contactDetected = false, rrIntervalsMs = emptyList()))
+        assertTrue(manager.isCooldownActive.value, "Two no-contact packets within 2s must not cancel cooldown")
+
+        // 3rd consecutive no-contact packet terminates recovery cooldown
+        simulatedTime += 1000L
+        manager.processRrIntervals(PolarHrMeasurement(hr = 0, contactDetected = false, rrIntervalsMs = emptyList()))
+        assertFalse(manager.isCooldownActive.value, "3rd consecutive no-contact packet must terminate cooldown")
         assertEquals(0, manager.cooldownSecondsRemaining.value)
 
-        // Reactivate cooldown and verify disconnection terminates it
+        // Reactivate cooldown and verify disconnection terminates it immediately
         manager.startSessionRecording("session-recovery", "WORKING_SET")
         manager.triggerCooldown("session-recovery", forceRestart = true)
         assertTrue(manager.isCooldownActive.value)
@@ -450,6 +469,7 @@ class PolarH10BleManagerTest {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         manager.startSessionRecording("session-timeout", "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 140, contactDetected = true, rrIntervalsMs = listOf(800.0)))
@@ -590,6 +610,7 @@ class PolarH10BleManagerTest {
         var simulatedTime = 100_000L
         val testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         val manager = PolarH10BleManager(scope = testScope, timeSource = { simulatedTime })
+        manager.setConnectedForTesting(true)
 
         // 1. Session completes recording for session-post-workout
         manager.startSessionRecording("session-post-workout", "WORKING_SET")
@@ -659,6 +680,7 @@ class PolarH10BleManagerTest {
         assertNull(manager.getSessionSummary("session-unrecorded"))
 
         // Start recording session-A
+        manager.setConnectedForTesting(true)
         manager.startSessionRecording("session-A", "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 140, contactDetected = true, rrIntervalsMs = listOf(800.0)))
 
@@ -822,7 +844,7 @@ class PolarH10BleManagerTest {
     }
 
     @Test
-    fun `startSessionRecording resets isExplicitDisconnect and auto-reconnects to remembered sensor`() {
+    fun `ensureConnectedOrReconnect respects isExplicitDisconnect after manual disconnect until user reconnects`() {
         val fakeAd = CompositionAdvertisement(
             id = "00000000-0000-0000-0000-24acac0e5b59",
             name = "Polar H10 12345678",
@@ -846,10 +868,15 @@ class PolarH10BleManagerTest {
         }
         assertTrue(manager.isExplicitDisconnectForTesting)
 
-        // Starting a workout should clear the explicit disconnect suppression and complete auto-reconnect
-        // through connect() without self-cancelling reconnectJob
-        manager.startSessionRecording("session-123", "WORKING_SET")
+        // ensureConnectedOrReconnect must NOT override explicit disconnect
+        manager.ensureConnectedOrReconnect()
+        assertFalse(manager.isConnected.value)
+        assertTrue(manager.isExplicitDisconnectForTesting)
 
+        // Explicit user action clears suppression and connects
+        runTest {
+            manager.autoReconnectIfRemembered(userInitiated = true)
+        }
         assertFalse(manager.isExplicitDisconnectForTesting)
         assertTrue(manager.isConnected.value)
         assertEquals(
@@ -924,8 +951,9 @@ class PolarH10BleManagerTest {
     fun `multi-set routine preserves lastRecordedSessionId across Idle discardActiveRecording and persists cooldown HRR to final set`() = runTest {
         var simulatedTime = 100_000L
         val database = com.devil.phoenixproject.testutil.createTestDatabase()
+        val workoutRepo = SqlDelightWorkoutRepository(database, FakeExerciseRepository())
         val manager = PolarH10BleManager(
-            database = database,
+            workoutRepository = workoutRepo,
             scope = this,
             timeSource = { simulatedTime },
         )
@@ -933,13 +961,13 @@ class PolarH10BleManagerTest {
 
         val set1Id = "ea838be2-3983-4ec3-8eb4-c8a75fdd52a2"
         val set2Id = "9615342a-142c-4cd7-838e-5cf38ab9b7f7"
-        val workoutRepo = SqlDelightWorkoutRepository(database, FakeExerciseRepository())
 
         // 1. Set 1 recording & flush
         manager.startSessionRecording(set1Id, "WORKING_SET")
         manager.processRrIntervals(PolarHrMeasurement(hr = 148, contactDetected = true, rrIntervalsMs = listOf(800.0)))
         workoutRepo.saveSession(WorkoutSession(id = set1Id, timestamp = simulatedTime))
         manager.flushSessionTelemetry(set1Id)
+        manager.awaitPendingPersistenceForTesting()
         assertNull(manager.currentRecordingSessionId, "flushSessionTelemetry must clear activeSessionId once committed")
         assertEquals(set1Id, manager.lastRecordedSessionId.value)
 
@@ -949,6 +977,7 @@ class PolarH10BleManagerTest {
         manager.processRrIntervals(PolarHrMeasurement(hr = 165, contactDetected = true, rrIntervalsMs = listOf(720.0)))
         workoutRepo.saveSession(WorkoutSession(id = set2Id, timestamp = simulatedTime))
         manager.flushSessionTelemetry(set2Id)
+        manager.awaitPendingPersistenceForTesting()
         assertNull(manager.currentRecordingSessionId)
         assertEquals(set2Id, manager.lastRecordedSessionId.value)
 
@@ -976,21 +1005,137 @@ class PolarH10BleManagerTest {
         simulatedTime += 65_000L
         manager.processRrIntervals(PolarHrMeasurement(hr = 135, contactDetected = true, rrIntervalsMs = listOf(850.0)))
         testScheduler.advanceTimeBy(1500L)
+        manager.awaitPendingPersistenceForTesting()
         assertEquals(30, manager.cooldownHrr60.value, "HRR60 should be 165 - 135 = 30 bpm")
 
         simulatedTime += 240_000L
         manager.processRrIntervals(PolarHrMeasurement(hr = 110, contactDetected = true, rrIntervalsMs = listOf(920.0)))
         testScheduler.advanceTimeBy(1500L)
+        manager.awaitPendingPersistenceForTesting()
 
         assertFalse(manager.isCooldownActive.value, "Cooldown should complete at 300s")
         assertEquals(55, manager.cooldownHrr300.value, "HRR300 should be 165 - 110 = 55 bpm")
 
         // Verify POST_WORKOUT_COOLDOWN beats and HRR summary persisted to Set 2 row in SQLite
+        // while preserving Set 2's frozen working-set avg/min/max HR (165 bpm)!
         val set2Beats = database.phoenixDatabaseQueries.selectPolarBeatSamplesBySession(set2Id).executeAsList()
         assertTrue(set2Beats.any { it.phase == "POST_WORKOUT_COOLDOWN" }, "POST_WORKOUT_COOLDOWN beats must persist to Set 2")
         val set2Session = database.phoenixDatabaseQueries.selectSessionById(set2Id).executeAsOne()
+        assertEquals(165L, set2Session.avgHeartRateBpm, "Cooldown beats must NOT overwrite working set avgHeartRateBpm")
+        assertEquals(165L, set2Session.minHeartRateBpm, "Cooldown beats must NOT overwrite working set minHeartRateBpm")
+        assertEquals(165L, set2Session.maxHeartRateBpm, "Cooldown beats must NOT overwrite working set maxHeartRateBpm")
         assertEquals(30L, set2Session.hrr60Bpm)
         assertEquals(55L, set2Session.hrr300Bpm)
+    }
+
+    @Test
+    fun `connect timeout catches TimeoutCancellationException and transitions to Error instead of hanging in Connecting`() = runTest {
+        val fakeAd = CompositionAdvertisement(
+            id = "00000000-0000-0000-0000-24acac0e5b59",
+            name = "Polar H10 12345678",
+            uuids = listOf(BleConstants.Polar.HR_SERVICE_UUID),
+        )
+        val address = fakeAd.identifier.toString()
+        val fakePeripheral = CompositionGattFake(fakeAd, kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)).apply {
+            connectGate = kotlinx.coroutines.CompletableDeferred() // Never completes -> triggers timeout
+        }
+        val manager = PolarH10BleManager(
+            scope = this,
+            createPeripheral = { fakePeripheral },
+        )
+        manager.cacheAdvertisementForTesting(address, fakeAd)
+
+        var result: Result<Unit>? = null
+        val connectJob = launch {
+            result = manager.connect(com.devil.phoenixproject.data.repository.ScannedDevice(name = "Polar H10 12345678", address = address, rssi = -50))
+        }
+        testScheduler.advanceTimeBy(BleConstants.CONNECTION_TIMEOUT_MS + 1000L)
+        connectJob.join()
+
+        assertNotNull(result)
+        assertTrue(result!!.isFailure, "connect() must return Result.failure on timeout")
+        assertFalse(manager.isConnected.value)
+        assertTrue(
+            manager.connectionState.value is ConnectionState.Error,
+            "Connection timeout must transition state to ConnectionState.Error, got ${manager.connectionState.value}",
+        )
+        assertEquals("Connection timed out", (manager.connectionState.value as ConnectionState.Error).message)
+    }
+
+    @Test
+    fun `PMD subscribe failure inside onDeviceConnected does not kill stateObserverJob`() = runTest {
+        val fakeAd = CompositionAdvertisement(
+            id = "00000000-0000-0000-0000-24acac0e5b59",
+            name = "Polar H10 12345678",
+            uuids = listOf(BleConstants.Polar.HR_SERVICE_UUID),
+        )
+        val address = fakeAd.identifier.toString()
+        // CompositionGattFake lacks PMD characteristics so ensurePmdSubscribed throws inside observe
+        val fakePeripheral = CompositionGattFake(fakeAd, kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler))
+        val manager = PolarH10BleManager(
+            scope = this,
+            createPeripheral = { fakePeripheral },
+        )
+        manager.cacheAdvertisementForTesting(address, fakeAd)
+
+        val result = manager.connect(com.devil.phoenixproject.data.repository.ScannedDevice(name = "Polar H10 12345678", address = address, rssi = -50))
+        testScheduler.runCurrent()
+
+        assertTrue(result.isSuccess)
+        assertTrue(manager.isConnected.value)
+        assertTrue(manager.isStateObserverActiveForTesting, "stateObserverJob must remain active even when PMD subscription fails")
+
+        // Verify subsequent disconnect is still observed
+        fakePeripheral.dropConnection()
+        testScheduler.runCurrent()
+        assertFalse(manager.isConnected.value)
+        assertEquals(ConnectionState.Disconnected, manager.connectionState.value)
+
+        manager.shutdown()
+    }
+
+    @Test
+    fun `cancelCooldown flushes buffered cooldown beats and earned hrr60 without fabricating hrr300`() = runTest {
+        var simulatedTime = 100_000L
+        val database = com.devil.phoenixproject.testutil.createTestDatabase()
+        val workoutRepo = SqlDelightWorkoutRepository(database, FakeExerciseRepository())
+        val manager = PolarH10BleManager(
+            workoutRepository = workoutRepo,
+            scope = this,
+            timeSource = { simulatedTime },
+        )
+        manager.setConnectedForTesting(true)
+
+        val sessionId = "session-cancel-cooldown"
+        manager.startSessionRecording(sessionId, "WORKING_SET")
+        manager.processRrIntervals(PolarHrMeasurement(hr = 160, contactDetected = true, rrIntervalsMs = listOf(750.0)))
+        workoutRepo.saveSession(WorkoutSession(id = sessionId, timestamp = simulatedTime))
+        manager.flushSessionTelemetry(sessionId)
+        manager.awaitPendingPersistenceForTesting()
+
+        manager.triggerCooldown(sessionId)
+        testScheduler.runCurrent()
+
+        // At 65s, HR drops to 130 -> hrr60 = 30 earned, plus 1 cooldown beat buffered
+        simulatedTime += 65_000L
+        manager.processRrIntervals(PolarHrMeasurement(hr = 130, contactDetected = true, rrIntervalsMs = listOf(850.0)))
+        testScheduler.advanceTimeBy(1500L)
+        manager.awaitPendingPersistenceForTesting()
+        assertEquals(30, manager.cooldownHrr60.value)
+        assertNull(manager.cooldownHrr300.value)
+
+        // Cancel cooldown before 300s (e.g. strap removed or user cancelled)
+        manager.cancelCooldown()
+        manager.awaitPendingPersistenceForTesting()
+
+        val beats = database.phoenixDatabaseQueries.selectPolarBeatSamplesBySession(sessionId).executeAsList()
+        assertEquals(2, beats.size, "Both working beat and buffered cooldown beat must be flushed on cancelCooldown")
+        assertEquals("POST_WORKOUT_COOLDOWN", beats.last().phase)
+
+        val sessionRow = database.phoenixDatabaseQueries.selectSessionById(sessionId).executeAsOne()
+        assertEquals(160L, sessionRow.avgHeartRateBpm)
+        assertEquals(30L, sessionRow.hrr60Bpm)
+        assertNull(sessionRow.hrr300Bpm, "hrr300Bpm must remain null when cooldown ends before 300s")
     }
 }
 

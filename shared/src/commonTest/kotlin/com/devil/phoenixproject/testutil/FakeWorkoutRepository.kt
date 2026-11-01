@@ -1,7 +1,6 @@
 package com.devil.phoenixproject.testutil
 
 import com.devil.phoenixproject.data.repository.CompletedSetRepository
-import com.devil.phoenixproject.database.MetricSample
 import com.devil.phoenixproject.database.PolarBeatSample
 import com.devil.phoenixproject.database.PolarEcgSegment
 import com.devil.phoenixproject.data.repository.MAX_RECENT_EXERCISE_SESSIONS
@@ -404,8 +403,4 @@ class FakeWorkoutRepository : WorkoutRepository {
     var polarEcgSegmentsBySession: (String) -> List<PolarEcgSegment> = { emptyList() }
     override suspend fun getPolarEcgSegmentsBySession(sessionId: String): List<PolarEcgSegment> =
         polarEcgSegmentsBySession(sessionId)
-
-    var metricSamplesBySession: (String) -> List<MetricSample> = { emptyList() }
-    override suspend fun getMetricSamplesBySession(sessionId: String): List<MetricSample> =
-        metricSamplesBySession(sessionId)
 }

@@ -1236,15 +1236,15 @@ DELETE FROM MetricSample WHERE sessionId = ?;
 -- Polar Queries (added in migration 59)
 updateSessionPolarSummary:
 UPDATE WorkoutSession SET
-    avgHeartRateBpm = :avgHeartRateBpm,
-    maxHeartRateBpm = :maxHeartRateBpm,
-    minHeartRateBpm = :minHeartRateBpm,
-    avgRrIntervalMs = :avgRrIntervalMs,
-    rmssdMs = :rmssdMs,
-    hrr60Bpm = :hrr60Bpm,
-    hrr300Bpm = :hrr300Bpm,
-    maxTorsoPitchDeg = :maxTorsoPitchDeg,
-    maxTorsoRollDeg = :maxTorsoRollDeg
+    avgHeartRateBpm = COALESCE(:avgHeartRateBpm, avgHeartRateBpm),
+    maxHeartRateBpm = COALESCE(:maxHeartRateBpm, maxHeartRateBpm),
+    minHeartRateBpm = COALESCE(:minHeartRateBpm, minHeartRateBpm),
+    avgRrIntervalMs = COALESCE(:avgRrIntervalMs, avgRrIntervalMs),
+    rmssdMs = COALESCE(:rmssdMs, rmssdMs),
+    hrr60Bpm = COALESCE(:hrr60Bpm, hrr60Bpm),
+    hrr300Bpm = COALESCE(:hrr300Bpm, hrr300Bpm),
+    maxTorsoPitchDeg = COALESCE(:maxTorsoPitchDeg, maxTorsoPitchDeg),
+    maxTorsoRollDeg = COALESCE(:maxTorsoRollDeg, maxTorsoRollDeg)
 WHERE id = :id;
 
 insertPolarBeatSample:
@@ -1255,6 +1255,9 @@ INSERT INTO PolarBeatSample (
 
 selectPolarBeatSamplesBySession:
 SELECT * FROM PolarBeatSample WHERE sessionId = ? ORDER BY timestampMs ASC;
+
+selectPolarBeatSampleById:
+SELECT * FROM PolarBeatSample WHERE id = :id;
 
 deletePolarBeatSamplesBySession:
 DELETE FROM PolarBeatSample WHERE sessionId = ?;
@@ -1278,6 +1281,9 @@ INSERT INTO PolarEcgSegment (
 
 selectPolarEcgSegmentsBySession:
 SELECT * FROM PolarEcgSegment WHERE sessionId = ? ORDER BY wallClockTimestampMs ASC;
+
+selectPolarEcgSegmentById:
+SELECT * FROM PolarEcgSegment WHERE id = :id;
 
 deletePolarEcgSegmentsBySession:
 DELETE FROM PolarEcgSegment WHERE sessionId = ?;

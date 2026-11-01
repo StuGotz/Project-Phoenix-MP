@@ -419,7 +419,7 @@ data class WorkoutMetric(
     val velocityA: Double = 0.0, // Firmware-provided velocity used for handle detection
     val velocityB: Double = 0.0, // Velocity for right handle detection (for single-handle exercises)
     val status: Int = 0, // Machine status flags (0x8000=Deload Occurred, 0x0040=Deload Warn)
-    // Polar H10 intra-set synchronized telemetry & torso biomechanics (migration 58)
+    // Polar H10 intra-set synchronized telemetry & torso biomechanics (migration 59)
     val heartRateBpm: Int? = null,
     val rrIntervalMs: Float? = null,
     val torsoPitchDeg: Float? = null,
@@ -629,7 +629,7 @@ data class WorkoutSession(
     val profileId: String = "default",
     /** Domain last-edit epoch millis used as the portal LWW wire timestamp. */
     val updatedAt: Long? = null,
-    // Polar H10 cardiac & torso biomechanics summary (added in migration 58)
+    // Polar H10 cardiac & torso biomechanics summary (added in migration 59)
     val avgHeartRateBpm: Int? = null,
     val maxHeartRateBpm: Int? = null,
     val minHeartRateBpm: Int? = null,
@@ -647,6 +647,12 @@ data class WorkoutSession(
     /** True if this session has biomechanics data (v0.5.0+) */
     val hasBiomechanicsData: Boolean
         get() = avgMcvMmS != null
+
+    /** True if this session has any persisted Polar H10 summary telemetry. */
+    val hasPolarTelemetry: Boolean
+        get() = avgHeartRateBpm != null || maxHeartRateBpm != null || minHeartRateBpm != null ||
+            avgRrIntervalMs != null || rmssdMs != null || hrr60Bpm != null || hrr300Bpm != null ||
+            maxTorsoPitchDeg != null || maxTorsoRollDeg != null
 }
 
 /**

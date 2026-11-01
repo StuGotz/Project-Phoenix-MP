@@ -305,9 +305,9 @@ fun ActiveWorkoutScreen(
         Logger.d {
             "ActiveWorkoutScreen: workoutState=$workoutState, isJustLift=${workoutParameters.isJustLift}"
         }
+        val isCooldownRunning = isPolarCooldownActive || activePolarCooldownSessionId != null
         when {
             workoutState is WorkoutState.Completed -> {
-                val isCooldownRunning = isPolarCooldownActive || activePolarCooldownSessionId != null
                 if (!isCooldownRunning) {
                     Logger.d { "ActiveWorkoutScreen: Workout completed (no Polar cooldown active), navigating back in 2s" }
                     delay(2000)
@@ -318,7 +318,7 @@ fun ActiveWorkoutScreen(
                 }
             }
 
-            workoutState is WorkoutState.Idle && workoutParameters.isJustLift -> {
+            workoutState is WorkoutState.Idle && workoutParameters.isJustLift && !isCooldownRunning -> {
                 // Just Lift completed and reset to Idle - navigate back to Just Lift screen
                 Logger.d {
                     "ActiveWorkoutScreen: Just Lift idle, navigating back to JustLiftScreen"
@@ -328,6 +328,7 @@ fun ActiveWorkoutScreen(
             }
 
             workoutState is WorkoutState.Idle &&
+                !isCooldownRunning &&
                 (
                     loadedRoutine == null ||
                         (
@@ -345,7 +346,7 @@ fun ActiveWorkoutScreen(
                 navController.navigateUp()
             }
 
-            workoutState is WorkoutState.Error -> {
+            workoutState is WorkoutState.Error && !isCooldownRunning -> {
                 // Show error for 3 seconds then navigate back
                 Logger.e { "ActiveWorkoutScreen: Error state, navigating back in 3s" }
                 delay(3000)

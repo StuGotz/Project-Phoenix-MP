@@ -1,6 +1,6 @@
 package com.devil.phoenixproject.data.repository
 
-import com.devil.phoenixproject.database.MetricSample
+import com.devil.phoenixproject.data.ble.PolarSessionSummary
 import com.devil.phoenixproject.database.PolarBeatSample
 import com.devil.phoenixproject.database.PolarEcgSegment
 import com.devil.phoenixproject.domain.model.BiomechanicsRepResult
@@ -59,6 +59,42 @@ interface WorkoutRepository {
         repMetrics: List<RepMetricData>,
         repBiomechanics: List<BiomechanicsRepResult>,
     )
+
+    suspend fun commitCompletedSet(
+        session: WorkoutSession,
+        metrics: List<WorkoutMetric>,
+        completedSet: CompletedSet?,
+        repMetrics: List<RepMetricData>,
+        repBiomechanics: List<BiomechanicsRepResult>,
+        polarBeatSamples: List<PolarBeatSample>,
+        polarEcgSegments: List<PolarEcgSegment>,
+    ) {
+        commitCompletedSet(
+            session = session,
+            metrics = metrics,
+            completedSet = completedSet,
+            repMetrics = repMetrics,
+            repBiomechanics = repBiomechanics,
+        )
+        if (polarBeatSamples.isNotEmpty() || polarEcgSegments.isNotEmpty()) {
+            savePolarSessionTelemetry(
+                sessionId = session.id,
+                beatSamples = polarBeatSamples,
+                ecgSegments = polarEcgSegments,
+            )
+        }
+    }
+
+    /**
+     * Persist buffered Polar H10 beat samples, ECG segments, and optional summary/HRR columns
+     * for [sessionId] in a single transaction on [kotlinx.coroutines.Dispatchers.IO].
+     */
+    suspend fun savePolarSessionTelemetry(
+        sessionId: String,
+        beatSamples: List<PolarBeatSample> = emptyList(),
+        ecgSegments: List<PolarEcgSegment> = emptyList(),
+        summary: PolarSessionSummary? = null,
+    ) = Unit
     suspend fun updateSessionExerciseTag(sessionId: String, exerciseId: String, exerciseName: String)
 
     /**
@@ -255,9 +291,6 @@ interface WorkoutRepository {
 
     /** Historical Polar ECG segments for a session. */
     suspend fun getPolarEcgSegmentsBySession(sessionId: String): List<PolarEcgSegment>
-
-    /** Historical raw metric samples for a session. */
-    suspend fun getMetricSamplesBySession(sessionId: String): List<MetricSample>
 }
 
 /** A routine a CSV import was going to overwrite was deleted or moved to another profile (#772). */

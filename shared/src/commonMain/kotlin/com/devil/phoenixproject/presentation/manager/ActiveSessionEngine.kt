@@ -8096,10 +8096,14 @@ class ActiveSessionEngine(
             return null
         }
         bodyweightCompletionGate.beginExecution(lease)
-        polarBleManager?.startSessionRecording(
-            sessionId = lease.sessionId,
-            phase = if (coordinator._repCount.value.warmupReps > 0 && !coordinator._repCount.value.isWarmupComplete) "WARMUP" else "WORKING_SET",
-        )
+        if (polarBleManager?.isConnected?.value == true) {
+            polarBleManager.startSessionRecording(
+                sessionId = lease.sessionId,
+                phase = if (coordinator._repCount.value.warmupReps > 0 && !coordinator._repCount.value.isWarmupComplete) "WARMUP" else "WORKING_SET",
+            )
+        } else {
+            polarBleManager?.ensureConnectedOrReconnect()
+        }
         if (!installBiomechanicsContext(lease)) return null
         retryRetainedWorkoutExitPersistence()
         executionContext = null
@@ -9564,14 +9568,18 @@ class ActiveSessionEngine(
             // tables land in ONE transaction. Nothing below this line can leave
             // a half-written set behind, and a sync that runs during the
             // completion can no longer push a session without its sets.
+            val polarTelemetry = polarBleManager?.drainSessionTelemetryForCommit(sessionId)
+            val polarBeats = polarTelemetry?.first.orEmpty()
+            val polarEcgs = polarTelemetry?.second.orEmpty()
             workoutRepository.commitCompletedSet(
                 session = snapshot.session,
                 metrics = snapshot.metrics,
                 completedSet = snapshot.completedSet,
                 repMetrics = snapshot.repMetrics,
                 repBiomechanics = snapshot.biomechanicsRepResults,
+                polarBeatSamples = polarBeats,
+                polarEcgSegments = polarEcgs,
             )
-            polarBleManager?.flushSessionTelemetry(sessionId)
             // Issue #869: the set is durable; Set Summary may now appear.
             commitSettled?.complete(Unit)
             snapshot.singleExerciseDefaults?.let { defaults ->
@@ -10777,7 +10785,13 @@ class ActiveSessionEngine(
                 // with the non-null 0 sentinel when unmeasured; non-Echo is unchanged.
                 // Shared rule with the exit-snapshot path: [recordedHeaviestKg].
                 val recordedHeaviestKgPerCable = summary.recordedHeaviestKg(params.isEchoMode)
+                val sessionId = executionContext?.lease?.sessionId
+                    ?: polarBleManager?.currentRecordingSessionId
+                    ?: polarBleManager?.lastRecordedSessionId?.value
+                    ?: generateUUID()
+                val polarSummary = polarBleManager?.getSessionSummary(sessionId)
                 val session = WorkoutSession(
+                    id = sessionId,
                     timestamp = timing.startMs,
                     mode = params.programMode.displayName,
                     reps = params.reps,
@@ -10821,6 +10835,15 @@ class ActiveSessionEngine(
                     // C4: profileId was missing from this path. FP-6: it is the owning
                     // profile, not the live one.
                     profileId = attributionProfileId,
+                    avgHeartRateBpm = polarSummary?.avgHeartRateBpm,
+                    maxHeartRateBpm = polarSummary?.maxHeartRateBpm,
+                    minHeartRateBpm = polarSummary?.minHeartRateBpm,
+                    avgRrIntervalMs = polarSummary?.avgRrIntervalMs,
+                    rmssdMs = polarSummary?.rmssdMs,
+                    hrr60Bpm = polarSummary?.hrr60Bpm,
+                    hrr300Bpm = polarSummary?.hrr300Bpm,
+                    maxTorsoPitchDeg = polarSummary?.maxTorsoPitchDeg,
+                    maxTorsoRollDeg = polarSummary?.maxTorsoRollDeg,
                 )
                 val completedSet = if (params.selectedExerciseId != null && repCount.workingReps > 0) {
                     val setIndex = legacyLogicalSetKey?.setIndex ?: coordinator._currentSetIndex.value
@@ -10853,14 +10876,18 @@ class ActiveSessionEngine(
                 // session without its set. This path never collected samples or rep
                 // metrics, so those lists stay empty; the session id is freshly generated,
                 // which makes commitCompletedSet's rep-table clears no-ops.
+                val polarTelemetry = polarBleManager?.drainSessionTelemetryForCommit(session.id)
+                val polarBeats = polarTelemetry?.first.orEmpty()
+                val polarEcgs = polarTelemetry?.second.orEmpty()
                 workoutRepository.commitCompletedSet(
                     session = session,
                     metrics = emptyList(),
                     completedSet = completedSet,
                     repMetrics = emptyList(),
                     repBiomechanics = emptyList(),
+                    polarBeatSamples = polarBeats,
+                    polarEcgSegments = polarEcgs,
                 )
-                polarBleManager?.flushSessionTelemetry(session.id)
                 val completedSetId = completedSet?.id
                 if (completedSet != null) {
                     Logger.d(

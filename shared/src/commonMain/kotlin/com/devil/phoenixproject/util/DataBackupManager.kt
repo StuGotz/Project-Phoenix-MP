@@ -2619,6 +2619,23 @@ abstract class BaseDataBackupManager(
                                                 entitiesWithErrors++
                                                 Logger.w { "Backup restore missing required session ${beat.sessionId} for polarBeatSample ${beat.id}" }
                                             } else {
+                                                val existing = queries.selectPolarBeatSampleById(beat.id).executeAsOneOrNull()
+                                                if (existing != null) {
+                                                    val same = existing.sessionId == beat.sessionId &&
+                                                        existing.timestampMs == beat.timestampMs &&
+                                                        existing.phase == beat.phase &&
+                                                        existing.hrBpm == beat.hrBpm.toLong() &&
+                                                        existing.rrMs == beat.rrMs.toDouble() &&
+                                                        existing.rmssdMs?.toFloat() == beat.rmssdMs &&
+                                                        existing.torsoPitchDeg?.toFloat() == beat.torsoPitchDeg &&
+                                                        existing.torsoRollDeg?.toFloat() == beat.torsoRollDeg &&
+                                                        existing.dynamicAccMg?.toInt() == beat.dynamicAccMg
+                                                    if (same) polarBeatSamplesSkipped++ else {
+                                                        entitiesWithErrors++
+                                                        Logger.w { "Backup restore conflict polarBeatSample id=${beat.id}" }
+                                                    }
+                                                    continue
+                                                }
                                                 queries.insertPolarBeatSampleRestoreIfAbsent(
                                                     id = beat.id,
                                                     sessionId = beat.sessionId,
@@ -2661,6 +2678,19 @@ abstract class BaseDataBackupManager(
                                                 entitiesWithErrors++
                                                 Logger.w { "Backup restore missing required session ${segment.sessionId} for polarEcgSegment ${segment.id}" }
                                             } else {
+                                                val existing = queries.selectPolarEcgSegmentById(segment.id).executeAsOneOrNull()
+                                                if (existing != null) {
+                                                    val same = existing.sessionId == segment.sessionId &&
+                                                        existing.sensorTimestampNs == segment.sensorTimestampNs &&
+                                                        existing.wallClockTimestampMs == segment.wallClockTimestampMs &&
+                                                        existing.phase == segment.phase &&
+                                                        existing.samplesUvCsv == segment.samplesUvCsv
+                                                    if (same) polarEcgSegmentsSkipped++ else {
+                                                        entitiesWithErrors++
+                                                        Logger.w { "Backup restore conflict polarEcgSegment id=${segment.id}" }
+                                                    }
+                                                    continue
+                                                }
                                                 queries.insertPolarEcgSegmentRestoreIfAbsent(
                                                     id = segment.id,
                                                     sessionId = segment.sessionId,

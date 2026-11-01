@@ -232,81 +232,43 @@ class PolarProtocolParserTest {
     // ==================== PMD ACC (FB005C82) Tests ====================
 
     @Test
-    fun `parsePolarPmdData parses uncompressed 16-bit ACC samples`() {
-        // Type 0x02 (ACC), Timestamp: 5000 ns, FrameType: 0x00
-        // Sample 0: X=100, Y=-200, Z=980 (1g down)
-        val bytes = ByteArray(10 + 6).apply {
-            this[0] = 0x02 // ACC
-            this[1] = 0x88.toByte()
-            this[2] = 0x13 // 5000L = 0x1388
-            this[9] = 0x00 // uncompressed
-
-            // X = 100 (0x0064)
-            this[10] = 0x64
-            this[11] = 0x00
-            // Y = -200 (0xFF38)
-            this[12] = 0x38
-            this[13] = 0xFF.toByte()
-            // Z = 980 (0x03D4)
-            this[14] = 0xD4.toByte()
-            this[15] = 0x03
+    fun `parsePolarPmdData parses uncompressed 16-bit ACC samples with frameTypes 0x00 and 0x01`() {
+        listOf(0x00.toByte(), 0x01.toByte()).forEach { frameType ->
+            val bytes = ByteArray(16).apply {
+                this[0] = 0x02 // ACC
+                this[1] = 0x88.toByte()
+                this[2] = 0x13 // 5000L
+                this[9] = frameType
+                this[10] = 0x64; this[11] = 0x00 // X = 100
+                this[12] = 0x38; this[13] = 0xFF.toByte() // Y = -200
+                this[14] = 0xD4.toByte(); this[15] = 0x03 // Z = 980
+            }
+            val acc = assertIs<PolarPmdMeasurement.Acc>(assertNotNull(parsePolarPmdData(bytes)))
+            assertEquals(5000L, acc.sensorTimestampNs)
+            assertEquals(1, acc.samples.size)
+            assertEquals(PolarAccSample(xMg = 100, yMg = -200, zMg = 980), acc.samples[0])
         }
-
-        val result = parsePolarPmdData(bytes)
-        assertNotNull(result)
-        val acc = assertIs<PolarPmdMeasurement.Acc>(result)
-        assertEquals(5000L, acc.sensorTimestampNs)
-        assertEquals(1, acc.samples.size)
-        assertEquals(PolarAccSample(xMg = 100, yMg = -200, zMg = 980), acc.samples[0])
     }
 
     @Test
-    fun `parsePolarPmdData parses delta-compressed ACC samples`() {
-        // Type 0x02 (ACC), Timestamp: 2000L, FrameType: 0x80 (delta-compressed)
-        // Reference sample: X=1000, Y=0, Z=-1000
-        // Delta size: 8 bits
-        // Sample count: 2 delta samples
-        // Delta 1: dX = 5, dY = -10, dZ = 20 -> sample 1: (1005, -10, -980)
-        // Delta 2: dX = -5, dY = 15, dZ = -20 -> sample 2: (1000, 5, -1000)
-        val bytes = ByteArray(18 + 6).apply {
-            this[0] = 0x02
-            this[1] = 0xD0.toByte()
-            this[2] = 0x07 // 2000L = 0x07D0
-            this[9] = 0x80.toByte() // delta-compressed
-
-            // Ref X = 1000 (0x03E8)
-            this[10] = 0xE8.toByte()
-            this[11] = 0x03
-            // Ref Y = 0 (0x0000)
-            this[12] = 0x00
-            this[13] = 0x00
-            // Ref Z = -1000 (0xFC18)
-            this[14] = 0x18
-            this[15] = 0xFC.toByte()
-
-            this[16] = 8 // deltaSizeBits = 8
-            this[17] = 2 // sampleCount = 2
-
-            // Deltas sample 1: dX=5, dY=-10, dZ=20
-            this[18] = 5
-            this[19] = (-10).toByte()
-            this[20] = 20
-
-            // Deltas sample 2: dX=-5, dY=15, dZ=-20
-            this[21] = (-5).toByte()
-            this[22] = 15
-            this[23] = (-20).toByte()
+    fun `parsePolarPmdData parses delta-compressed ACC samples with frameTypes 0x80 and 0x81`() {
+        listOf(0x80.toByte(), 0x81.toByte()).forEach { frameType ->
+            val bytes = ByteArray(24).apply {
+                this[0] = 0x02; this[1] = 0xD0.toByte(); this[2] = 0x07; this[9] = frameType
+                this[10] = 0xE8.toByte(); this[11] = 0x03 // X = 1000
+                this[12] = 0x00; this[13] = 0x00 // Y = 0
+                this[14] = 0x18; this[15] = 0xFC.toByte() // Z = -1000
+                this[16] = 8; this[17] = 2 // deltaSizeBits = 8, sampleCount = 2
+                this[18] = 5; this[19] = (-10).toByte(); this[20] = 20
+                this[21] = (-5).toByte(); this[22] = 15; this[23] = (-20).toByte()
+            }
+            val acc = assertIs<PolarPmdMeasurement.Acc>(assertNotNull(parsePolarPmdData(bytes)))
+            assertEquals(2000L, acc.sensorTimestampNs)
+            assertEquals(3, acc.samples.size)
+            assertEquals(PolarAccSample(1000, 0, -1000), acc.samples[0])
+            assertEquals(PolarAccSample(1005, -10, -980), acc.samples[1])
+            assertEquals(PolarAccSample(1000, 5, -1000), acc.samples[2])
         }
-
-        val result = parsePolarPmdData(bytes)
-        assertNotNull(result)
-        val acc = assertIs<PolarPmdMeasurement.Acc>(result)
-        assertEquals(2000L, acc.sensorTimestampNs)
-        // Base sample + 2 delta samples = 3 samples total
-        assertEquals(3, acc.samples.size)
-        assertEquals(PolarAccSample(1000, 0, -1000), acc.samples[0])
-        assertEquals(PolarAccSample(1005, -10, -980), acc.samples[1])
-        assertEquals(PolarAccSample(1000, 5, -1000), acc.samples[2])
     }
 
     @Test
@@ -314,7 +276,6 @@ class PolarProtocolParserTest {
         val bytes = ByteArray(18).apply {
             this[0] = 0x02
             this[9] = 0x80.toByte()
-            // Ref X=50, Y=50, Z=50
             this[10] = 50; this[11] = 0
             this[12] = 50; this[13] = 0
             this[14] = 50; this[15] = 0
@@ -330,73 +291,65 @@ class PolarProtocolParserTest {
     }
 
     @Test
-    fun `parsePolarPmdData parses uncompressed 16-bit ACC samples with frameType 0x01`() {
-        // Polar H10 16-bit ACC frames use subType 0x01 (bit 7 = 0 for uncompressed)
-        val bytes = ByteArray(10 + 6).apply {
-            this[0] = 0x02 // ACC
-            this[1] = 0x88.toByte()
-            this[2] = 0x13 // 5000L
-            this[9] = 0x01 // uncompressed with subType 0x01
+    fun `parsePolarPmdData parses multi-block delta-compressed ACC samples across block boundaries`() {
+        // Type 0x02 (ACC), Timestamp: 3000L, FrameType: 0x81 (delta-compressed)
+        // Reference sample: X=500, Y=-100, Z=1000
+        // Block 1 (offset 16): deltaSizeBits = 8, sampleCount = 2 -> 6 delta bytes (18..23)
+        //   Sample 1 deltas: dX=10, dY=-5, dZ=20 -> (510, -105, 1020)
+        //   Sample 2 deltas: dX=-4, dY=15, dZ=-10 -> (506, -90, 1010)
+        // Block 2 (offset 24): deltaSizeBits = 4, sampleCount = 2 -> 24 bits = 3 delta bytes (26..28)
+        //   Sample 3 deltas (4-bit signed): dX=3 (0x3), dY=-2 (0xE), dZ=1 (0x1) -> (509, -92, 1011)
+        //   Sample 4 deltas (4-bit signed): dX=-3 (0xD), dY=2 (0x2), dZ=-1 (0xF) -> (506, -90, 1010)
+        //   Packed 4-bit nibbles (LSB first):
+        //     Byte 26: low=dX3(0x3), high=dY3(0xE) -> 0xE3
+        //     Byte 27: low=dZ3(0x1), high=dX4(0xD) -> 0xD1
+        //     Byte 28: low=dY4(0x2), high=dZ4(0xF) -> 0xF2
+        val bytes = ByteArray(29).apply {
+            this[0] = 0x02
+            this[1] = 0xB8.toByte()
+            this[2] = 0x0B // 3000L = 0x0BB8
+            this[9] = 0x81.toByte()
 
-            // X = 100 (0x0064)
-            this[10] = 0x64
-            this[11] = 0x00
-            // Y = -200 (0xFF38)
-            this[12] = 0x38
+            // Ref X = 500 (0x01F4)
+            this[10] = 0xF4.toByte()
+            this[11] = 0x01
+            // Ref Y = -100 (0xFF9C)
+            this[12] = 0x9C.toByte()
             this[13] = 0xFF.toByte()
-            // Z = 980 (0x03D4)
-            this[14] = 0xD4.toByte()
+            // Ref Z = 1000 (0x03E8)
+            this[14] = 0xE8.toByte()
             this[15] = 0x03
-        }
 
-        val result = parsePolarPmdData(bytes)
-        assertNotNull(result)
-        val acc = assertIs<PolarPmdMeasurement.Acc>(result)
-        assertEquals(5000L, acc.sensorTimestampNs)
-        assertEquals(1, acc.samples.size)
-        assertEquals(PolarAccSample(xMg = 100, yMg = -200, zMg = 980), acc.samples[0])
-    }
-
-    @Test
-    fun `parsePolarPmdData parses delta-compressed ACC samples with frameType 0x81`() {
-        // Polar H10 delta-compressed 16-bit ACC frames use subType 0x01 with bit 7 = 1 -> 0x81
-        val bytes = ByteArray(18 + 6).apply {
-            this[0] = 0x02 // ACC
-            this[1] = 0xD0.toByte()
-            this[2] = 0x07 // 2000L
-            this[9] = 0x81.toByte() // delta-compressed (0x80 | 0x01)
-
-            // Ref X = 1000 (0x03E8)
-            this[10] = 0xE8.toByte()
-            this[11] = 0x03
-            // Ref Y = 0 (0x0000)
-            this[12] = 0x00
-            this[13] = 0x00
-            // Ref Z = -1000 (0xFC18)
-            this[14] = 0x18
-            this[15] = 0xFC.toByte()
-
+            // Block 1 header
             this[16] = 8 // deltaSizeBits = 8
             this[17] = 2 // sampleCount = 2
-
-            // Deltas sample 1: dX=5, dY=-10, dZ=20
-            this[18] = 5
-            this[19] = (-10).toByte()
+            // Block 1 sample 1: (10, -5, 20)
+            this[18] = 10
+            this[19] = (-5).toByte()
             this[20] = 20
-
-            // Deltas sample 2: dX=-5, dY=15, dZ=-20
-            this[21] = (-5).toByte()
+            // Block 1 sample 2: (-4, 15, -10)
+            this[21] = (-4).toByte()
             this[22] = 15
-            this[23] = (-20).toByte()
+            this[23] = (-10).toByte()
+
+            // Block 2 header
+            this[24] = 4 // deltaSizeBits = 4
+            this[25] = 2 // sampleCount = 2
+            // Block 2 packed 4-bit deltas
+            this[26] = 0xE3.toByte()
+            this[27] = 0xD1.toByte()
+            this[28] = 0xF2.toByte()
         }
 
         val result = parsePolarPmdData(bytes)
         assertNotNull(result)
         val acc = assertIs<PolarPmdMeasurement.Acc>(result)
-        assertEquals(2000L, acc.sensorTimestampNs)
-        assertEquals(3, acc.samples.size)
-        assertEquals(PolarAccSample(1000, 0, -1000), acc.samples[0])
-        assertEquals(PolarAccSample(1005, -10, -980), acc.samples[1])
-        assertEquals(PolarAccSample(1000, 5, -1000), acc.samples[2])
+        assertEquals(3000L, acc.sensorTimestampNs)
+        assertEquals(5, acc.samples.size)
+        assertEquals(PolarAccSample(500, -100, 1000), acc.samples[0])
+        assertEquals(PolarAccSample(510, -105, 1020), acc.samples[1])
+        assertEquals(PolarAccSample(506, -90, 1010), acc.samples[2])
+        assertEquals(PolarAccSample(509, -92, 1011), acc.samples[3])
+        assertEquals(PolarAccSample(506, -90, 1010), acc.samples[4])
     }
 }

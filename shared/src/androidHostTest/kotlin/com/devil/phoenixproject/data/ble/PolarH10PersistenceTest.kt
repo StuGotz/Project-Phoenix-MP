@@ -1,34 +1,43 @@
 package com.devil.phoenixproject.data.ble
 
+import com.devil.phoenixproject.data.repository.SqlDelightWorkoutRepository
+import com.devil.phoenixproject.data.repository.WorkoutRepository
 import com.devil.phoenixproject.database.PhoenixDatabase
 import com.devil.phoenixproject.domain.model.PolarHrMeasurement
 import com.devil.phoenixproject.domain.model.PolarPmdMeasurement
+import com.devil.phoenixproject.domain.model.WorkoutSession
+import com.devil.phoenixproject.testutil.FakeExerciseRepository
 import com.devil.phoenixproject.testutil.createTestDatabase
 import com.devil.phoenixproject.testutil.seedExercise
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * End-to-end telemetry persistence test verifying that raw Polar beat and ECG records
  * survive foreign-key constraints (PRAGMA foreign_keys = ON) via in-memory buffering
- * prior to session row creation and direct persistence during post-workout cooldown.
+ * prior to session row creation and asynchronous persistence through [WorkoutRepository].
  */
 class PolarH10PersistenceTest {
 
     private lateinit var database: PhoenixDatabase
+    private lateinit var workoutRepository: WorkoutRepository
     private lateinit var testScope: CoroutineScope
     private var simulatedTime: Long = 1_000_000L
 
     @BeforeTest
     fun setUp() {
         database = createTestDatabase()
+        workoutRepository = SqlDelightWorkoutRepository(database, FakeExerciseRepository())
         testScope = CoroutineScope(Dispatchers.Unconfined + Job())
         database.seedExercise("bench")
     }
@@ -38,69 +47,26 @@ class PolarH10PersistenceTest {
         testScope.cancel()
     }
 
-    private fun insertWorkoutSession(id: String) {
-        database.phoenixDatabaseQueries.insertSession(
-            id = id,
-            timestamp = 0L,
-            mode = "OldSchool",
-            targetReps = 10L,
-            weightPerCableKg = 40.0,
-            progressionKg = 0.0,
-            duration = 0L,
-            totalReps = 10L,
-            warmupReps = 0L,
-            workingReps = 10L,
-            isJustLift = 0L,
-            stopAtTop = 0L,
-            eccentricLoad = 100L,
-            echoLevel = 1L,
-            exerciseId = "bench",
-            exerciseName = "Bench Press",
-            routineSessionId = null,
-            routineName = null,
-            safetyFlags = 0L,
-            deloadWarningCount = 0L,
-            romViolationCount = 0L,
-            spotterActivations = 0L,
-            peakForceConcentricA = null,
-            peakForceConcentricB = null,
-            peakForceEccentricA = null,
-            peakForceEccentricB = null,
-            avgForceConcentricA = null,
-            avgForceConcentricB = null,
-            avgForceEccentricA = null,
-            avgForceEccentricB = null,
-            heaviestLiftKg = null,
-            totalVolumeKg = null,
-            cableCount = null,
-            estimatedCalories = null,
-            warmupAvgWeightKg = null,
-            workingAvgWeightKg = null,
-            burnoutAvgWeightKg = null,
-            peakWeightKg = null,
-            rpe = null,
-            routineId = null,
-            avgMcvMmS = null,
-            avgAsymmetryPercent = null,
-            totalVelocityLossPercent = null,
-            dominantSide = null,
-            strengthProfile = null,
-            formScore = null,
-            profile_id = "default",
-            display_multiplier = null,
-            externalAddedLoadKg = 0.0,
-            counterweightKg = 0.0,
-            rackItemsJson = "[]",
+    private fun insertWorkoutSession(id: String) = runBlocking {
+        workoutRepository.saveSession(
+            WorkoutSession(
+                id = id,
+                exerciseId = "bench",
+                exerciseName = "Bench Press",
+                timestamp = 0L,
+            )
         )
     }
 
     @Test
-    fun `telemetry is buffered before session exists and flushed after session creation with foreign keys ON`() {
+    fun `telemetry is buffered before session exists and flushed after session creation with foreign keys ON`() = runBlocking {
         val manager = PolarH10BleManager(
-            database = database,
+            workoutRepository = workoutRepository,
             scope = testScope,
             timeSource = { simulatedTime },
         )
+        manager.setConnectedForTesting(true)
+        manager.setPersistRawEcg(true)
         val sessionId = "session-fk-test"
 
         // 1. Begin recording before WorkoutSession row exists
@@ -133,6 +99,7 @@ class PolarH10PersistenceTest {
 
         // 5. Flush buffered telemetry
         manager.flushSessionTelemetry(sessionId)
+        manager.awaitPendingPersistenceForTesting()
 
         // 6. Verify in-memory buffers are cleared and rows are durable in SQLite with foreign keys ON
         assertEquals(0, manager.getBufferedBeatSamplesForTesting().size)
@@ -166,20 +133,97 @@ class PolarH10PersistenceTest {
 
         assertEquals(1, manager.getBufferedBeatSamplesForTesting().size)
         manager.stopCooldown()
+        manager.awaitPendingPersistenceForTesting()
         assertEquals(0, manager.getBufferedBeatSamplesForTesting().size)
 
         val beatRowsDuringCooldown = database.phoenixDatabaseQueries.selectPolarBeatSamplesBySession(sessionId).executeAsList()
         assertEquals(3, beatRowsDuringCooldown.size)
         assertEquals(130L, beatRowsDuringCooldown[2].hrBpm)
+
+        // Verify early stopCooldown (<60s) did not fabricate hrr60 or hrr300, and working set HR summary remained 145
+        val sessionRow = database.phoenixDatabaseQueries.selectSessionById(sessionId).executeAsOne()
+        assertEquals(145L, sessionRow.avgHeartRateBpm)
+        assertEquals(145L, sessionRow.minHeartRateBpm)
+        assertEquals(145L, sessionRow.maxHeartRateBpm)
+        assertNull(sessionRow.hrr60Bpm)
+        assertNull(sessionRow.hrr300Bpm)
+    }
+
+    @Test
+    fun `raw ECG persistence is disabled by default while live ECG sparkline still updates`() = runBlocking {
+        val manager = PolarH10BleManager(
+            workoutRepository = workoutRepository,
+            scope = testScope,
+            timeSource = { simulatedTime },
+        )
+        manager.setConnectedForTesting(true)
+        val sessionId = "session-ecg-opt-out"
+        manager.startSessionRecording(sessionId = sessionId, phase = "WORKING_SET")
+        manager.processRrIntervals(PolarHrMeasurement(hr = 140, contactDetected = true, rrIntervalsMs = listOf(800.0)))
+
+        val ecgMeasurement = PolarPmdMeasurement.Ecg(
+            sensorTimestampNs = 999L,
+            samplesMicrovolts = listOf(100, 200, 300),
+        )
+        manager.processPmdMeasurement(ecgMeasurement)
+
+        // Live sparkline state updates even when persistRawEcg is false
+        assertNotNull(manager.latestEcg.value)
+        assertEquals(0, manager.getBufferedEcgSegmentsForTesting().size)
+
+        insertWorkoutSession(sessionId)
+        manager.flushSessionTelemetry(sessionId)
+        manager.awaitPendingPersistenceForTesting()
+
+        val ecgRows = database.phoenixDatabaseQueries.selectPolarEcgSegmentsBySession(sessionId).executeAsList()
+        assertTrue(ecgRows.isEmpty())
+    }
+
+    @Test
+    fun `raw ECG persistence caps buffered and stored segments at MAX_ECG_SEGMENTS_PER_SESSION`() = runBlocking {
+        val manager = PolarH10BleManager(
+            workoutRepository = workoutRepository,
+            scope = testScope,
+            timeSource = { simulatedTime },
+        )
+        manager.setConnectedForTesting(true)
+        manager.setPersistRawEcg(true)
+        val sessionId = "session-ecg-cap"
+        manager.startSessionRecording(sessionId = sessionId, phase = "WORKING_SET")
+        manager.processRrIntervals(PolarHrMeasurement(hr = 140, contactDetected = true, rrIntervalsMs = listOf(800.0)))
+
+        for (i in 1..650) {
+            manager.processPmdMeasurement(
+                PolarPmdMeasurement.Ecg(
+                    sensorTimestampNs = i.toLong(),
+                    samplesMicrovolts = listOf(100, 200, 300),
+                )
+            )
+        }
+
+        assertEquals(
+            PolarH10BleManager.MAX_ECG_SEGMENTS_PER_SESSION,
+            manager.getBufferedEcgSegmentsForTesting().size,
+        )
+
+        insertWorkoutSession(sessionId)
+        manager.flushSessionTelemetry(sessionId)
+        manager.awaitPendingPersistenceForTesting()
+
+        val ecgRows = database.phoenixDatabaseQueries.selectPolarEcgSegmentsBySession(sessionId).executeAsList()
+        assertEquals(PolarH10BleManager.MAX_ECG_SEGMENTS_PER_SESSION, ecgRows.size)
+        assertEquals(51L, ecgRows.first().sensorTimestampNs)
+        assertEquals(650L, ecgRows.last().sensorTimestampNs)
     }
 
     @Test
     fun `abandoned set discards buffered telemetry cleanly`() {
         val manager = PolarH10BleManager(
-            database = database,
+            workoutRepository = workoutRepository,
             scope = testScope,
             timeSource = { simulatedTime },
         )
+        manager.setConnectedForTesting(true)
         val sessionId = "session-abandoned"
 
         manager.startSessionRecording(sessionId = sessionId, phase = "WORKING_SET")

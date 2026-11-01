@@ -48,6 +48,7 @@ import com.devil.phoenixproject.data.ble.PolarH10BleManager
 import com.devil.phoenixproject.data.repository.WorkoutRepository
 import com.devil.phoenixproject.presentation.components.PolarSessionAnalyticsCard
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -289,13 +290,14 @@ fun WorkoutTab(
                 onReconnect = onReconnectWorkoutTeardown,
             )
 
-            if (connectionState is ConnectionState.Connected) {
-                when (workoutState) {
-                    is WorkoutState.Error -> {
+            val isPolarCooldownActive = polarBleManager?.isCooldownActive?.collectAsState()?.value ?: false
+            if (connectionState is ConnectionState.Connected || workoutState is WorkoutState.Completed || isPolarCooldownActive) {
+                when {
+                    workoutState is WorkoutState.Error && connectionState is ConnectionState.Connected -> {
                         ErrorCard(message = workoutState.message)
                     }
 
-                    is WorkoutState.Completed -> {
+                    workoutState is WorkoutState.Completed || isPolarCooldownActive -> {
                         CompletedCard(
                             loadedRoutine = loadedRoutine,
                             currentExerciseIndex = currentExerciseIndex,

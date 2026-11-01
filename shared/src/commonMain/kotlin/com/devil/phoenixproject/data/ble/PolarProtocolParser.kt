@@ -195,32 +195,41 @@ private fun parseAccFrame(data: ByteArray, timestampNs: Long, frameType: Int): P
         var currentX = getInt16LE(data, 10)
         var currentY = getInt16LE(data, 12)
         var currentZ = getInt16LE(data, 14)
-        val deltaSizeBits = data[16].toInt() and 0xFF
-        val sampleCount = data[17].toInt() and 0xFF
 
         val samples = mutableListOf<PolarAccSample>()
         // The baseline sample at index 10..15 is the initial reference sample
         samples.add(PolarAccSample(currentX, currentY, currentZ))
 
-        if (deltaSizeBits == 0 || sampleCount == 0 || deltaSizeBits > 16) {
-            return PolarPmdMeasurement.Acc(timestampNs, samples)
-        }
+        var blockOffset = 16
+        while (blockOffset + 2 <= data.size) {
+            val deltaSizeBits = data[blockOffset].toInt() and 0xFF
+            val sampleCount = data[blockOffset + 1].toInt() and 0xFF
+            val deltaDataStart = blockOffset + 2
 
-        val totalAvailableBits = (data.size - 18) * 8
-        var bitPos = 0
-        for (i in 0 until sampleCount) {
-            if (bitPos + (deltaSizeBits * 3) > totalAvailableBits) break
-            val deltaX = readSignedBits(data, 18, bitPos, deltaSizeBits)
-            bitPos += deltaSizeBits
-            val deltaY = readSignedBits(data, 18, bitPos, deltaSizeBits)
-            bitPos += deltaSizeBits
-            val deltaZ = readSignedBits(data, 18, bitPos, deltaSizeBits)
-            bitPos += deltaSizeBits
+            if (deltaSizeBits == 0 || sampleCount == 0 || deltaSizeBits > 16) {
+                break
+            }
 
-            currentX += deltaX
-            currentY += deltaY
-            currentZ += deltaZ
-            samples.add(PolarAccSample(currentX, currentY, currentZ))
+            val totalAvailableBits = (data.size - deltaDataStart) * 8
+            var bitPos = 0
+            for (i in 0 until sampleCount) {
+                if (bitPos + (deltaSizeBits * 3) > totalAvailableBits) break
+                val deltaX = readSignedBits(data, deltaDataStart, bitPos, deltaSizeBits)
+                bitPos += deltaSizeBits
+                val deltaY = readSignedBits(data, deltaDataStart, bitPos, deltaSizeBits)
+                bitPos += deltaSizeBits
+                val deltaZ = readSignedBits(data, deltaDataStart, bitPos, deltaSizeBits)
+                bitPos += deltaSizeBits
+
+                currentX += deltaX
+                currentY += deltaY
+                currentZ += deltaZ
+                samples.add(PolarAccSample(currentX, currentY, currentZ))
+            }
+
+            val blockByteLength = (bitPos + 7) / 8
+            if (blockByteLength <= 0) break
+            blockOffset = deltaDataStart + blockByteLength
         }
 
         PolarPmdMeasurement.Acc(

@@ -36,8 +36,6 @@ import co.touchlab.kermit.Logger
 import com.devil.phoenixproject.data.ble.PolarH10BleManager
 import com.devil.phoenixproject.data.ble.PolarSessionSummary
 import com.devil.phoenixproject.data.repository.WorkoutRepository
-import com.devil.phoenixproject.util.PolarTelemetryUtils
-import com.devil.phoenixproject.database.MetricSample
 import com.devil.phoenixproject.database.PolarBeatSample
 import com.devil.phoenixproject.database.PolarEcgSegment
 import com.devil.phoenixproject.domain.model.ConnectionState
@@ -49,15 +47,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Enhanced Polar H10 Session Analytics Card.
- *
- * Displays post-set and post-workout cardiac performance metrics (Avg/Max/Min HR, RMSSD, RR),
- * 3D Torso Biomechanics (max hip-hinge pitch & lateral roll asymmetry), the 5-minute
- * Heart Rate Recovery (HRR) cooldown protocol with real-time countdown, drop tracking, and control,
- * plus 3 rich interactive Canvas visualizations:
- * 1. Continuous Heart Rate & Recovery Timeline with color-coded phase bands
- * 2. 3D Torso Biomechanics vs. Rep Cable Position
- * 3. Saved 130 Hz ECG Waveform Scrubber
+ * Polar H10 Session Analytics Card.
  */
 @Composable
 fun PolarSessionAnalyticsCard(
@@ -87,69 +77,49 @@ fun PolarSessionAnalyticsCard(
             ?: polarBleManager?.currentRecordingSessionId
             ?: latestSummary?.sessionId
     } else {
-        sessionId
-            ?: session?.id
-            ?: activeCooldownSessionId
-            ?: polarBleManager?.currentRecordingSessionId
-            ?: latestSummary?.sessionId
-            ?: lastRecordedSessionId
-    }
-    val fallbackSummary = remember(session, resolvedSessionId) {
-        session?.let { s ->
-            if (s.avgHeartRateBpm != null || s.maxHeartRateBpm != null || s.minHeartRateBpm != null ||
-                s.avgRrIntervalMs != null || s.rmssdMs != null || s.hrr60Bpm != null ||
-                s.hrr300Bpm != null || s.maxTorsoPitchDeg != null || s.maxTorsoRollDeg != null) {
-                PolarSessionSummary(
-                    sessionId = s.id,
-                    avgHeartRateBpm = s.avgHeartRateBpm,
-                    maxHeartRateBpm = s.maxHeartRateBpm,
-                    minHeartRateBpm = s.minHeartRateBpm,
-                    avgRrIntervalMs = s.avgRrIntervalMs,
-                    rmssdMs = s.rmssdMs,
-                    hrr60Bpm = s.hrr60Bpm,
-                    hrr300Bpm = s.hrr300Bpm,
-                    maxTorsoPitchDeg = s.maxTorsoPitchDeg,
-                    maxTorsoRollDeg = s.maxTorsoRollDeg,
-                )
-            } else null
-        } ?: resolvedSessionId?.let { polarBleManager?.getSessionSummary(it) }
+        sessionId ?: session?.id
     }
 
-    val rawSummary = if (resolvedSessionId != null && latestSummary?.sessionId == resolvedSessionId) {
+    val fallbackSummary = remember(session, resolvedSessionId, showCooldown) {
+        session?.takeIf { it.hasPolarTelemetry }?.let { s ->
+            PolarSessionSummary(
+                sessionId = s.id,
+                avgHeartRateBpm = s.avgHeartRateBpm,
+                maxHeartRateBpm = s.maxHeartRateBpm,
+                minHeartRateBpm = s.minHeartRateBpm,
+                avgRrIntervalMs = s.avgRrIntervalMs,
+                rmssdMs = s.rmssdMs,
+                hrr60Bpm = s.hrr60Bpm,
+                hrr300Bpm = s.hrr300Bpm,
+                maxTorsoPitchDeg = s.maxTorsoPitchDeg,
+                maxTorsoRollDeg = s.maxTorsoRollDeg,
+            )
+        } ?: if (showCooldown) resolvedSessionId?.let { polarBleManager?.getSessionSummary(it) } else null
+    }
+
+    val summary = if (showCooldown && resolvedSessionId != null && latestSummary?.sessionId == resolvedSessionId) {
         latestSummary
     } else {
         fallbackSummary
     }
 
-    // Historical samples queries for visualizations
+    val isLiveConnected = showCooldown && connectionState is ConnectionState.Connected
+    val isLiveCooldownActive = showCooldown && isCooldownActive &&
+        (resolvedSessionId == null || activeCooldownSessionId == null || activeCooldownSessionId == resolvedSessionId)
+
+    val shouldQuerySamples = session?.hasPolarTelemetry == true ||
+        summary != null ||
+        (showCooldown && resolvedSessionId != null && (
+            resolvedSessionId == lastRecordedSessionId ||
+                resolvedSessionId == activeCooldownSessionId ||
+                resolvedSessionId == polarBleManager?.currentRecordingSessionId
+            ))
+
     var beatSamples by remember(resolvedSessionId) { mutableStateOf<List<PolarBeatSample>>(emptyList()) }
     var ecgSegments by remember(resolvedSessionId) { mutableStateOf<List<PolarEcgSegment>>(emptyList()) }
-    var metricSamples by remember(resolvedSessionId) { mutableStateOf<List<MetricSample>>(emptyList()) }
 
-    val computedRmssdFromBeats = remember(beatSamples) {
-        if (beatSamples.size >= 2) {
-            PolarTelemetryUtils.calculateRmssdMs(beatSamples.map { it.rrMs })?.toFloat()
-        } else null
-    }
-
-    val computedAvgRrFromBeats = remember(beatSamples) {
-        val validRrs = beatSamples.map { it.rrMs }.filter { it in 250.0..2500.0 }
-        if (validRrs.isNotEmpty()) validRrs.average().toFloat() else null
-    }
-
-    val summary = remember(rawSummary, computedRmssdFromBeats, computedAvgRrFromBeats) {
-        if (rawSummary == null && computedRmssdFromBeats == null && computedAvgRrFromBeats == null) null
-        else {
-            val base = rawSummary ?: PolarSessionSummary()
-            base.copy(
-                rmssdMs = computedRmssdFromBeats ?: rawSummary?.rmssdMs,
-                avgRrIntervalMs = computedAvgRrFromBeats ?: rawSummary?.avgRrIntervalMs,
-            )
-        }
-    }
-
-    LaunchedEffect(resolvedSessionId, workoutRepository) {
-        if (resolvedSessionId != null && workoutRepository != null) {
+    LaunchedEffect(resolvedSessionId, workoutRepository, shouldQuerySamples) {
+        if (resolvedSessionId != null && workoutRepository != null && shouldQuerySamples) {
             try {
                 beatSamples = workoutRepository.getPolarBeatSamplesBySession(resolvedSessionId)
             } catch (e: Exception) {
@@ -160,20 +130,19 @@ fun PolarSessionAnalyticsCard(
             } catch (e: Exception) {
                 Logger.w { "Failed to load PolarEcgSegments: ${e.message}" }
             }
-            try {
-                metricSamples = workoutRepository.getMetricSamplesBySession(resolvedSessionId)
-            } catch (e: Exception) {
-                Logger.w { "Failed to load MetricSamples: ${e.message}" }
-            }
         }
     }
 
-    val isConnected = connectionState is ConnectionState.Connected
-    val hasCardiacData = summary?.avgHeartRateBpm != null || summary?.maxHeartRateBpm != null || isCooldownActive || beatSamples.isNotEmpty() || ecgSegments.isNotEmpty()
-    val hasBiomechanicsData = summary?.maxTorsoPitchDeg != null || summary?.maxTorsoRollDeg != null || metricSamples.any { it.torsoPitchDeg != null || it.torsoRollDeg != null }
+    val hrr60 = summary?.hrr60Bpm ?: if (showCooldown) cooldownHrr60 else null
+    val hrr300 = summary?.hrr300Bpm ?: if (showCooldown) cooldownHrr300 else null
+    val hasCardiacData = summary?.avgHeartRateBpm != null || summary?.maxHeartRateBpm != null ||
+        summary?.minHeartRateBpm != null || summary?.rmssdMs != null || summary?.avgRrIntervalMs != null ||
+        hrr60 != null || hrr300 != null || isLiveCooldownActive || beatSamples.isNotEmpty() || ecgSegments.isNotEmpty()
+    val hasBiomechanicsData = summary?.maxTorsoPitchDeg != null || summary?.maxTorsoRollDeg != null ||
+        beatSamples.any { it.torsoPitchDeg != null || it.torsoRollDeg != null }
 
-    // If no Polar data and not connected or in cooldown, hide the card
-    if (!hasCardiacData && !hasBiomechanicsData && !isConnected && !isCooldownActive) {
+    // If no Polar data and not in a live post-workout session, hide the card
+    if (!hasCardiacData && !hasBiomechanicsData && !isLiveConnected && !isLiveCooldownActive) {
         return
     }
 
@@ -185,7 +154,7 @@ fun PolarSessionAnalyticsCard(
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (isCooldownActive) {
+            color = if (isLiveCooldownActive) {
                 MaterialTheme.colorScheme.primary
             } else {
                 MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
@@ -239,7 +208,7 @@ fun PolarSessionAnalyticsCard(
                             maxLines = 1,
                         )
                         Text(
-                            text = if (isCooldownActive) "Recovery Cooldown Active" else "Cardiac & Biomechanics Summary",
+                            text = if (isLiveCooldownActive) "Recovery Cooldown Active" else "Cardiac & Biomechanics Summary",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -250,17 +219,17 @@ fun PolarSessionAnalyticsCard(
 
                 Surface(
                     shape = MaterialTheme.shapes.small,
-                    color = if (isConnected) {
+                    color = if (isLiveConnected) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
                         MaterialTheme.colorScheme.surfaceVariant
                     },
                 ) {
                     Text(
-                        text = if (isConnected) "Connected" else "Logged",
+                        text = if (isLiveConnected) "Connected" else "Logged",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Medium,
-                        color = if (isConnected) {
+                        color = if (isLiveConnected) {
                             MaterialTheme.colorScheme.onPrimaryContainer
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -322,7 +291,7 @@ fun PolarSessionAnalyticsCard(
                             label = "HRV (RMSSD)",
                             value = "${rmssd.roundToInt()}",
                             unit = "ms",
-                            subtext = if (rmssd >= 50f) "High Vagal Tone" else if (rmssd >= 25f) "Moderate" else "High Strain",
+                            subtext = if (rmssd >= 50f) "High Vagal Tone" else if (rmssd >= 25f) "Moderate" else "Slow Recovery",
                             icon = Icons.Default.Speed,
                             tint = Color(0xFF4CAF50),
                             modifier = Modifier.weight(1f),
@@ -352,7 +321,7 @@ fun PolarSessionAnalyticsCard(
                             label = "Max Hip Hinge",
                             value = "${pitch.roundToInt()}°",
                             unit = "pitch",
-                            subtext = "Sagittal forward bend",
+                            subtext = if (abs(pitch) >= 30f) "High Trunk Lean" else "Sagittal forward bend",
                             icon = Icons.Default.Accessibility,
                             tint = Color(0xFFFF9800),
                             modifier = Modifier.weight(1f),
@@ -373,13 +342,13 @@ fun PolarSessionAnalyticsCard(
             }
 
             // Section 4: 5-Minute Heart Rate Recovery (HRR) Protocol Card
-            val hasRecoveryData = summary?.hrr60Bpm != null || summary?.hrr300Bpm != null || isCooldownActive
-            if (showCooldown && (hasRecoveryData || isConnected)) {
+            val hasRecoveryData = hrr60 != null || hrr300 != null || isLiveCooldownActive
+            if (hasRecoveryData || (showCooldown && isLiveConnected)) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isCooldownActive) {
+                        containerColor = if (isLiveCooldownActive) {
                             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                         } else {
                             MaterialTheme.colorScheme.surfaceContainer
@@ -387,7 +356,7 @@ fun PolarSessionAnalyticsCard(
                     ),
                     border = BorderStroke(
                         1.dp,
-                        if (isCooldownActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        if (isLiveCooldownActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                         else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
                     ),
                 ) {
@@ -420,7 +389,7 @@ fun PolarSessionAnalyticsCard(
                                 )
                             }
 
-                            if (isCooldownActive) {
+                            if (isLiveCooldownActive) {
                                 val mins = cooldownSecondsRemaining / 60
                                 val secs = cooldownSecondsRemaining % 60
                                 Surface(
@@ -438,7 +407,7 @@ fun PolarSessionAnalyticsCard(
                             }
                         }
 
-                        if (isCooldownActive) {
+                        if (isLiveCooldownActive) {
                             // Active Cooldown Display
                             val currentHr = hrMeasurement?.hr
                             val dropSoFar = if (currentHr != null && cooldownStartHr != null) {
@@ -510,10 +479,6 @@ fun PolarSessionAnalyticsCard(
                                 }
                             }
                         } else {
-                            // Historical or Post-Cooldown State
-                            val hrr60 = summary?.hrr60Bpm ?: cooldownHrr60
-                            val hrr300 = summary?.hrr300Bpm ?: cooldownHrr300
-
                             if (hrr60 != null || hrr300 != null) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -527,7 +492,7 @@ fun PolarSessionAnalyticsCard(
                                                 drop60 >= 25 -> "Elite"
                                                 drop60 >= 18 -> "Good"
                                                 drop60 >= 12 -> "Fair"
-                                                else -> "Elevated Risk"
+                                                else -> "Slow Recovery"
                                             },
                                             modifier = Modifier.weight(1f),
                                         )
@@ -539,13 +504,13 @@ fun PolarSessionAnalyticsCard(
                                             rating = when {
                                                 drop300 >= 50 -> "Excellent"
                                                 drop300 >= 35 -> "Optimal"
-                                                else -> "Slow"
+                                                else -> "Slow Recovery"
                                             },
                                             modifier = Modifier.weight(1f),
                                         )
                                     }
                                 }
-                                if (isConnected) {
+                                if (showCooldown && isLiveConnected) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.End,
@@ -572,7 +537,7 @@ fun PolarSessionAnalyticsCard(
                                         }
                                     }
                                 }
-                            } else if (isConnected) {
+                            } else if (showCooldown && isLiveConnected) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -621,8 +586,8 @@ fun PolarSessionAnalyticsCard(
                 ContinuousHeartRateTimelineChart(samples = beatSamples)
             }
 
-            if (metricSamples.any { it.torsoPitchDeg != null || it.torsoRollDeg != null }) {
-                TorsoBiomechanicsVsCableChart(samples = metricSamples)
+            if (beatSamples.any { it.torsoPitchDeg != null || it.torsoRollDeg != null }) {
+                TorsoBiomechanicsVsCableChart(samples = beatSamples)
             }
 
             if (ecgSegments.isNotEmpty()) {
@@ -1048,12 +1013,12 @@ private fun ContinuousHeartRateTimelineChart(
 }
 
 /**
- * Chart 2 — 3D Torso Biomechanics vs. Rep Position (`MetricSample`).
- * Plots intra-set torso pitch (hinge) and roll (tilt) synchronized with cable position/force.
+ * Chart 2 — 3D Torso Biomechanics (`PolarBeatSample`).
+ * Plots intra-set torso pitch (hinge) and roll (tilt) across recorded beats.
  */
 @Composable
 private fun TorsoBiomechanicsVsCableChart(
-    samples: List<MetricSample>,
+    samples: List<PolarBeatSample>,
     modifier: Modifier = Modifier,
 ) {
     val biomechSamples = remember(samples) {
@@ -1071,8 +1036,6 @@ private fun TorsoBiomechanicsVsCableChart(
         }
     }
 
-    // Dynamic Left Axis (Degrees):
-    // Collect all angles present, ensuring 0° is always included with padding
     val pitchAngles = remember(biomechSamples) { biomechSamples.mapNotNull { it.torsoPitchDeg?.toFloat() } }
     val rollAngles = remember(biomechSamples) { biomechSamples.mapNotNull { it.torsoRollDeg?.toFloat() } }
     val allAngles = remember(pitchAngles, rollAngles) { pitchAngles + rollAngles }
@@ -1081,24 +1044,6 @@ private fun TorsoBiomechanicsVsCableChart(
     val minAngle = rawMinAngle - 5f
     val maxAngle = (rawMaxAngle + 5f).coerceAtLeast(minAngle + 10f)
     val angleRange = (maxAngle - minAngle).coerceAtLeast(1f)
-
-    // Dynamic Right Axis (Cable Position):
-    // Independent normalization to session's min/max active cable position (position + positionB) / 2f
-    val cablePositions = remember(biomechSamples) {
-        biomechSamples.mapNotNull { s ->
-            if (s.position != null && s.positionB != null) {
-                (s.position.toFloat() + s.positionB.toFloat()) / 2f
-            } else {
-                s.position?.toFloat() ?: s.positionB?.toFloat()
-            }
-        }
-    }
-    val rawMinPos = cablePositions.minOrNull() ?: 0f
-    val rawMaxPos = cablePositions.maxOrNull() ?: 1f
-    val posSpan = (rawMaxPos - rawMinPos).coerceAtLeast(0.05f)
-    val minPos = (rawMinPos - posSpan * 0.05f).coerceAtLeast(0f)
-    val maxPos = rawMaxPos + posSpan * 0.05f
-    val posRange = (maxPos - minPos).coerceAtLeast(0.01f)
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -1127,7 +1072,7 @@ private fun TorsoBiomechanicsVsCableChart(
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
-                        text = "3D TORSO BIOMECHANICS & CABLE POSITION",
+                        text = "3D TORSO BIOMECHANICS TIMELINE",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
@@ -1136,7 +1081,7 @@ private fun TorsoBiomechanicsVsCableChart(
                 }
 
                 Text(
-                    text = "$sampleCount reps/pts",
+                    text = "$sampleCount pts",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
@@ -1145,7 +1090,6 @@ private fun TorsoBiomechanicsVsCableChart(
                 )
             }
 
-            // Legend & Dynamic Axis Info Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1153,7 +1097,6 @@ private fun TorsoBiomechanicsVsCableChart(
             ) {
                 PhaseLegendDot(color = Color(0xFFFF9800), label = "Hinge (Pitch°)")
                 PhaseLegendDot(color = Color(0xFF00BCD4), label = "Tilt (Roll°)")
-                PhaseLegendDot(color = Color(0xFFAB47BC), label = "Cable Pos", isLine = true)
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = "0° ref | ${minAngle.roundToInt()}°..${maxAngle.roundToInt()}°",
@@ -1166,13 +1109,7 @@ private fun TorsoBiomechanicsVsCableChart(
                 )
             }
 
-            // Scrub Info Bar
             if (selectedSample != null) {
-                val cablePos = if (selectedSample.position != null && selectedSample.positionB != null) {
-                    (selectedSample.position.toFloat() + selectedSample.positionB.toFloat()) / 2f
-                } else {
-                    selectedSample.position?.toFloat() ?: selectedSample.positionB?.toFloat()
-                }
                 Surface(
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -1197,23 +1134,10 @@ private fun TorsoBiomechanicsVsCableChart(
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF00BCD4),
                         )
-                        cablePos?.let { pos ->
-                            val romPercent = ((pos - minPos) / posRange * 100f).roundToInt().coerceIn(0, 100)
-                            Text(
-                                text = "Cable: ${romPercent}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFAB47BC),
-                                softWrap = false,
-                                maxLines = 1,
-                            )
-                        }
                     }
                 }
             }
 
-            // Canvas Plot
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1247,12 +1171,10 @@ private fun TorsoBiomechanicsVsCableChart(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
                     val h = size.height
-
                     val padTop = 14f
                     val padBottom = 14f
                     val plotH = h - padTop - padBottom
 
-                    // Center 0° baseline for posture reference
                     val zeroY = padTop + (1f - (0f - minAngle) / angleRange) * plotH
                     drawLine(
                         color = Color(0xFF1E3A5F),
@@ -1260,8 +1182,6 @@ private fun TorsoBiomechanicsVsCableChart(
                         end = Offset(w, zeroY),
                         strokeWidth = 1.2f,
                     )
-
-                    // Degree tick marker on left edge
                     drawLine(
                         color = Color(0xFF4A7DA5),
                         start = Offset(0f, zeroY),
@@ -1271,39 +1191,6 @@ private fun TorsoBiomechanicsVsCableChart(
 
                     val stepX = w / (sampleCount - 1).coerceAtLeast(1).toFloat()
 
-                    // 1. Cable Position (Purple line scaled independently across full height)
-                    val cablePath = Path()
-                    var cableStarted = false
-                    biomechSamples.forEachIndexed { i, s ->
-                        val pos = if (s.position != null && s.positionB != null) {
-                            (s.position.toFloat() + s.positionB.toFloat()) / 2f
-                        } else {
-                            s.position?.toFloat() ?: s.positionB?.toFloat()
-                        }
-                        if (pos != null) {
-                            val x = i * stepX
-                            val y = padTop + (1f - (pos - minPos) / posRange) * plotH
-                            if (!cableStarted) {
-                                cablePath.moveTo(x, y)
-                                cableStarted = true
-                            } else {
-                                cablePath.lineTo(x, y)
-                            }
-                        }
-                    }
-                    if (cableStarted) {
-                        drawPath(
-                            path = cablePath,
-                            color = Color(0xFFAB47BC).copy(alpha = 0.75f),
-                            style = Stroke(
-                                width = 1.8.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                            ),
-                        )
-                    }
-
-                    // 2. Torso Pitch (Hip Hinge, orange line scaled across angle range)
                     val pitchPath = Path()
                     var pitchStarted = false
                     biomechSamples.forEachIndexed { i, s ->
@@ -1322,15 +1209,10 @@ private fun TorsoBiomechanicsVsCableChart(
                         drawPath(
                             path = pitchPath,
                             color = Color(0xFFFF9800),
-                            style = Stroke(
-                                width = 2.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                            ),
+                            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
                         )
                     }
 
-                    // 3. Torso Roll (Lateral Tilt, cyan line scaled across angle range)
                     val rollPath = Path()
                     var rollStarted = false
                     biomechSamples.forEachIndexed { i, s ->
@@ -1349,15 +1231,10 @@ private fun TorsoBiomechanicsVsCableChart(
                         drawPath(
                             path = rollPath,
                             color = Color(0xFF00BCD4),
-                            style = Stroke(
-                                width = 1.5.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                            ),
+                            style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
                         )
                     }
 
-                    // 4. Scrubber Line & Indicators
                     scrubFraction?.let { fraction ->
                         val scrubX = fraction * w
                         drawLine(
@@ -1370,16 +1247,6 @@ private fun TorsoBiomechanicsVsCableChart(
                             val pitchY = padTop + (1f - (pitch.toFloat() - minAngle) / angleRange) * plotH
                             drawCircle(color = scrubberDotColor, radius = 4.dp.toPx(), center = Offset(scrubX, pitchY))
                             drawCircle(color = Color(0xFFFF9800), radius = 2.5.dp.toPx(), center = Offset(scrubX, pitchY))
-                        }
-                        val selCablePos = if (selectedSample?.position != null && selectedSample?.positionB != null) {
-                            (selectedSample.position!!.toFloat() + selectedSample.positionB!!.toFloat()) / 2f
-                        } else {
-                            selectedSample?.position?.toFloat() ?: selectedSample?.positionB?.toFloat()
-                        }
-                        selCablePos?.let { pos ->
-                            val cableY = padTop + (1f - (pos - minPos) / posRange) * plotH
-                            drawCircle(color = scrubberDotColor, radius = 4.dp.toPx(), center = Offset(scrubX, cableY))
-                            drawCircle(color = Color(0xFFAB47BC), radius = 2.5.dp.toPx(), center = Offset(scrubX, cableY))
                         }
                     }
                 }

@@ -1,6 +1,5 @@
 package com.devil.phoenixproject.presentation.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +18,6 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,30 +27,19 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.devil.phoenixproject.data.ble.PolarH10BleManager
 import com.devil.phoenixproject.domain.model.ConnectionState
-import com.devil.phoenixproject.domain.model.PolarAccSample
 import com.devil.phoenixproject.ui.theme.Spacing
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import kotlin.math.roundToInt
@@ -68,35 +55,15 @@ fun PolarH10SettingsCard(
     val batteryLevel by polarBleManager.batteryLevel.collectAsState()
     val hrMeasurement by polarBleManager.hrMeasurement.collectAsState()
 
-    val latestEcg by polarBleManager.latestEcg.collectAsState()
-    val latestAcc by polarBleManager.latestAcc.collectAsState()
-
     val rememberedAddress by polarBleManager.rememberedAddress.collectAsState()
     val rememberedName by polarBleManager.rememberedName.collectAsState()
     val isAutoReconnectEnabled by polarBleManager.isAutoReconnectEnabled.collectAsState()
+    val persistRawEcg by polarBleManager.persistRawEcg.collectAsState()
 
     val torsoPitchDeg by polarBleManager.torsoPitchDeg.collectAsState()
     val torsoRollDeg by polarBleManager.torsoRollDeg.collectAsState()
     val dynamicAccMg by polarBleManager.dynamicAccMg.collectAsState()
     val isContactDetected by polarBleManager.isContactDetected.collectAsState()
-    val isAccStreaming by polarBleManager.isAccStreaming.collectAsState()
-    val isEcgStreaming by polarBleManager.isEcgStreaming.collectAsState()
-
-    val ecgSamples = remember { mutableStateListOf<Int>() }
-    LaunchedEffect(isEcgStreaming) {
-        if (!isEcgStreaming) {
-            ecgSamples.clear()
-        } else {
-            polarBleManager.ecgStream.collect { ecg ->
-                ecgSamples.addAll(ecg.samplesMicrovolts)
-                while (ecgSamples.size > 260) {
-                    ecgSamples.removeAt(0)
-                }
-            }
-        }
-    }
-
-
 
     Card(
         modifier = modifier
@@ -227,7 +194,7 @@ fun PolarH10SettingsCard(
                                         Text("Forget", color = MaterialTheme.colorScheme.error)
                                     }
                                     Button(
-                                        onClick = { scope.launch { polarBleManager.autoReconnectIfRemembered() } },
+                                        onClick = { scope.launch { polarBleManager.autoReconnectIfRemembered(userInitiated = true) } },
                                     ) {
                                         Text("Reconnect")
                                     }
@@ -420,85 +387,20 @@ fun PolarH10SettingsCard(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "50 Hz ACC Stream",
+                                    "Save Raw 130 Hz ECG",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
                                 )
                                 Text(
-                                    "Stream live chest accelerometer & posture",
+                                    "Store raw ECG segments in workout history (capped at 600 segments/set)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             Switch(
-                                checked = isAccStreaming,
-                                onCheckedChange = { enable ->
-                                    scope.launch {
-                                        if (enable) polarBleManager.startAccStream() else polarBleManager.stopAccStream()
-                                    }
-                                },
+                                checked = persistRawEcg,
+                                onCheckedChange = { polarBleManager.setPersistRawEcg(it) },
                             )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "130 Hz ECG Stream",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(
-                                    "Stream live single-lead electrocardiogram trace",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = isEcgStreaming,
-                                onCheckedChange = { enable ->
-                                    scope.launch {
-                                        if (enable) polarBleManager.startEcgStream() else polarBleManager.stopEcgStream()
-                                    }
-                                },
-                            )
-                        }
-
-                        AnimatedVisibility(visible = isEcgStreaming) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp),
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(72.dp)
-                                        .clip(MaterialTheme.shapes.small)
-                                        .background(Color(0xFF0D1B2A))
-                                        .border(1.dp, Color(0xFF1E3A5F), MaterialTheme.shapes.small),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (ecgSamples.isEmpty()) {
-                                        Text(
-                                            text = if (isContactDetected) "Waiting for ECG signal..." else "Ensure strap electrodes are moist and snug against skin",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontSize = 11.sp,
-                                        )
-                                    }
-                                    EcgWaveformCanvas(
-                                        samples = ecgSamples,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .fillMaxHeight()
-                                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                                    )
-                                }
-                            }
                         }
                     }
 

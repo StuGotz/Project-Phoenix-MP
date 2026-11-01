@@ -129,7 +129,9 @@ private fun PolarH10WorkoutStripContent(
 
     DisposableEffect(Unit) {
         onDispose {
-            polarBleManager.stopTelemetryStreamsAsync()
+            if (polarBleManager.currentRecordingSessionId == null && !polarBleManager.isCooldownActive.value) {
+                polarBleManager.stopTelemetryStreamsAsync()
+            }
         }
     }
 
